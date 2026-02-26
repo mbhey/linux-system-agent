@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-Linux System Agent - An AI agent for Kubuntu system management
+Linux System Agent - An AI agent for Linux system management
+Supports: Ubuntu, Debian, Fedora, Arch, openSUSE, and derivatives
 """
 
 import subprocess
 import os
 import shutil
 import json
+import platform
 from pathlib import Path
 from typing import Optional, List
 
@@ -20,6 +22,166 @@ DEFAULT_MODEL = "qwen2:7b"
 
 CONFIG_DIR = Path.home() / ".linux_agent"
 CONFIG_FILE = CONFIG_DIR / "instructions.json"
+
+
+class LinuxDistro:
+    """Detects and manages Linux distribution-specific commands."""
+
+    def __init__(self):
+        self.distro = self.detect_distro()
+        self.package_manager = self.get_package_manager()
+        self.service_manager = "systemctl"
+
+    def detect_distro(self) -> str:
+        """Detect the Linux distribution."""
+        try:
+            if os.path.exists("/etc/os-release"):
+                with open("/etc/os-release") as f:
+                    for line in f:
+                        if line.startswith("ID="):
+                            return line.split("=")[1].strip().strip('"')
+        except:
+            pass
+        return "unknown"
+
+    def get_package_manager(self) -> dict:
+        """Get package manager commands based on distro."""
+        pkg_managers = {
+            "ubuntu": {
+                "name": "apt",
+                "update": "apt update",
+                "upgrade": "DEBIAN_FRONTEND=noninteractive sudo apt upgrade -y",
+                "install": "DEBIAN_FRONTEND=noninteractive sudo apt install -y",
+                "remove": "sudo apt remove -y",
+                "search": "apt search",
+                "autoremove": "sudo apt autoremove -y",
+                "clean": "sudo apt clean",
+            },
+            "debian": {
+                "name": "apt",
+                "update": "apt update",
+                "upgrade": "DEBIAN_FRONTEND=noninteractive sudo apt upgrade -y",
+                "install": "DEBIAN_FRONTEND=noninteractive sudo apt install -y",
+                "remove": "sudo apt remove -y",
+                "search": "apt search",
+                "autoremove": "sudo apt autoremove -y",
+                "clean": "sudo apt clean",
+            },
+            "fedora": {
+                "name": "dnf",
+                "update": "sudo dnf check-update",
+                "upgrade": "sudo dnf upgrade -y",
+                "install": "sudo dnf install -y",
+                "remove": "sudo dnf remove -y",
+                "search": "dnf search",
+                "autoremove": "sudo dnf autoremove -y",
+                "clean": "sudo dnf clean all",
+            },
+            "rhel": {
+                "name": "dnf",
+                "update": "sudo dnf check-update",
+                "upgrade": "sudo dnf upgrade -y",
+                "install": "sudo dnf install -y",
+                "remove": "sudo dnf remove -y",
+                "search": "dnf search",
+                "autoremove": "sudo dnf autoremove -y",
+                "clean": "sudo dnf clean all",
+            },
+            "centos": {
+                "name": "yum",
+                "update": "sudo yum check-update",
+                "upgrade": "sudo yum update -y",
+                "install": "sudo yum install -y",
+                "remove": "sudo yum remove -y",
+                "search": "yum search",
+                "autoremove": "sudo yum autoremove -y",
+                "clean": "sudo yum clean all",
+            },
+            "arch": {
+                "name": "pacman",
+                "update": "sudo pacman -Sy",
+                "upgrade": "sudo pacman -Syu",
+                "install": "sudo pacman -S --noconfirm",
+                "remove": "sudo pacman -R --noconfirm",
+                "search": "pacman -Ss",
+                "autoremove": "sudo pacman -Rcs --noconfirm",
+                "clean": "sudo pacman -Scc --noconfirm",
+            },
+            "manjaro": {
+                "name": "pacman",
+                "update": "sudo pacman -Sy",
+                "upgrade": "sudo pacman -Syu",
+                "install": "sudo pacman -S --noconfirm",
+                "remove": "sudo pacman -R --noconfirm",
+                "search": "pacman -Ss",
+                "autoremove": "sudo pacman -Rcs --noconfirm",
+                "clean": "sudo pacman -Scc --noconfirm",
+            },
+            "opensuse": {
+                "name": "zypper",
+                "update": "sudo zypper refresh",
+                "upgrade": "sudo zypper update -y",
+                "install": "sudo zypper install -y",
+                "remove": "sudo zypper remove -y",
+                "search": "zypper search",
+                "autoremove": "sudo zypper remove --clean-deps -y",
+                "clean": "sudo zypper clean --all",
+            },
+            "alpine": {
+                "name": "apk",
+                "update": "sudo apk update",
+                "upgrade": "sudo apk upgrade",
+                "install": "sudo apk add",
+                "remove": "sudo apk del",
+                "search": "apk search",
+                "autoremove": "sudo apk cache clean",
+                "clean": "sudo apk cache clean",
+            },
+        }
+
+        # Check for known derivatives
+        distro_lower = self.distro.lower()
+
+        # Check for Ubuntu/Debian derivatives
+        if distro_lower in ["ubuntu", "debian", "linuxmint", "pop"]:
+            return pkg_managers["ubuntu"]
+        # Check for Fedora/RHEL derivatives
+        elif distro_lower in ["fedora", "rhel", "centos", "rocky", "alma"]:
+            return pkg_managers.get(distro_lower, pkg_managers["fedora"])
+        # Check for Arch derivatives
+        elif distro_lower in ["arch", "manjaro", "endeavouros"]:
+            return pkg_managers.get(distro_lower, pkg_managers["arch"])
+        # Check for openSUSE
+        elif distro_lower in ["opensuse", "sles"]:
+            return pkg_managers["opensuse"]
+        # Default to apt
+        else:
+            return pkg_managers["ubuntu"]
+
+    def get_upgrade_command(self) -> str:
+        return self.package_manager["upgrade"]
+
+    def get_install_command(self, package: str) -> str:
+        return f"{self.package_manager['install']} {package}"
+
+    def get_remove_command(self, package: str) -> str:
+        return f"{self.package_manager['remove']} {package}"
+
+    def get_update_command(self) -> str:
+        return self.package_manager["update"]
+
+    def get_clean_command(self) -> str:
+        return self.package_manager["clean"]
+
+    def get_autoremove_command(self) -> str:
+        return self.package_manager["autoremove"]
+
+    def get_search_command(self, package: str) -> str:
+        return f"{self.package_manager['search']} {package}"
+
+
+# Global distro instance
+distro = LinuxDistro()
 
 
 def ensure_config_dir():
@@ -63,19 +225,46 @@ def format_custom_instructions() -> str:
 def check_updates() -> str:
     """Check for system and package updates."""
     result = subprocess.run(
-        "apt update 2>&1 && apt list --upgradable 2>/dev/null",
+        f"{distro.get_update_command()} 2>&1",
         shell=True,
         capture_output=True,
         text=True,
     )
-    return result.stdout + result.stderr
+    output = result.stdout + result.stderr
+
+    # Get upgradable packages (different for each distro)
+    if distro.package_manager["name"] in ["apt"]:
+        result2 = subprocess.run(
+            "apt list --upgradable 2>/dev/null",
+            shell=True,
+            capture_output=True,
+            text=True,
+        )
+        output += "\n" + result2.stdout
+    elif distro.package_manager["name"] in ["dnf", "yum"]:
+        result2 = subprocess.run(
+            "dnf list updates 2>&1", shell=True, capture_output=True, text=True
+        )
+        output += "\n" + result2.stdout
+    elif distro.package_manager["name"] == "pacman":
+        result2 = subprocess.run(
+            "pacman -Qu 2>&1", shell=True, capture_output=True, text=True
+        )
+        output += "\n" + result2.stdout
+    elif distro.package_manager["name"] == "zypper":
+        result2 = subprocess.run(
+            "zypper list-updates 2>&1", shell=True, capture_output=True, text=True
+        )
+        output += "\n" + result2.stdout
+
+    return output
 
 
 @tool
 def upgrade_system() -> str:
     """Upgrade all system packages."""
     result = subprocess.run(
-        "DEBIAN_FRONTEND=noninteractive sudo apt upgrade -y 2>&1",
+        f"{distro.get_upgrade_command()} 2>&1",
         shell=True,
         capture_output=True,
         text=True,
@@ -89,8 +278,8 @@ def clean_system() -> str:
     results = []
 
     cmds = [
-        ("Clean apt cache", "sudo apt clean"),
-        ("Remove auto-remove", "sudo apt autoremove -y"),
+        (f"Clean {distro.package_manager['name']} cache", distro.get_clean_command()),
+        ("Remove auto-remove", distro.get_autoremove_command()),
     ]
 
     for name, cmd in cmds:
@@ -156,9 +345,9 @@ def tune_performance() -> str:
 
 @tool
 def install_package(package_name: str) -> str:
-    """Install a package by name using apt."""
+    """Install a package by name."""
     result = subprocess.run(
-        f"DEBIAN_FRONTEND=noninteractive sudo apt install -y {package_name} 2>&1",
+        f"{distro.get_install_command(package_name)} 2>&1",
         shell=True,
         capture_output=True,
         text=True,
@@ -170,7 +359,7 @@ def install_package(package_name: str) -> str:
 def remove_package(package_name: str) -> str:
     """Remove/uninstall a package by name."""
     result = subprocess.run(
-        f"sudo apt remove -y {package_name} 2>&1",
+        f"{distro.get_remove_command(package_name)} 2>&1",
         shell=True,
         capture_output=True,
         text=True,
@@ -180,9 +369,9 @@ def remove_package(package_name: str) -> str:
 
 @tool
 def search_package(package_name: str) -> str:
-    """Search for a package in apt repositories."""
+    """Search for a package in repositories."""
     result = subprocess.run(
-        f"apt search {package_name} 2>&1 | head -20",
+        f"{distro.get_search_command(package_name)} 2>&1 | head -20",
         shell=True,
         capture_output=True,
         text=True,
@@ -485,14 +674,19 @@ def create_agent(model: str = DEFAULT_MODEL):
 
     custom_instr = format_custom_instructions()
 
-    system_prompt = f"""You are a Linux System Agent for Kubuntu. You help users manage their system.
+    distro_info = f"Detected Linux Distribution: {distro.distro.title()}\nPackage Manager: {distro.package_manager['name'].upper()}"
+
+    system_prompt = f"""You are a Linux System Agent for Linux system management. You help users manage their system.
+{distro_info}
 {custom_instr}
+
+IMPORTANT: Use the appropriate package manager commands for {distro.distro}. The detected package manager is: {distro.package_manager["name"]}
 
 Available tools:
 UPDATES & PACKAGES:
 - check_updates: Check for package updates
 - upgrade_system: Upgrade all packages  
-- install_package: Install a package (apt)
+- install_package: Install a package
 - remove_package: Remove a package
 - search_package: Search for a package
 - add_repository: Add a PPA or repository
@@ -536,8 +730,10 @@ Be helpful and explain your actions."""
 
 def main():
     print("=" * 50)
-    print("Linux System Agent - Kubuntu")
+    print(f"Linux System Agent - {distro.distro.title()}")
     print("=" * 50)
+    print(f"Detected distro: {distro.distro.title()}")
+    print(f"Package manager: {distro.package_manager['name'].upper()}")
     print(f"Available models: {', '.join(AVAILABLE_MODELS)}")
     print(f"Default model: {DEFAULT_MODEL}")
     print("\nTo change model, type: set model <model_name>")

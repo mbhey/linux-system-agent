@@ -12,7 +12,7 @@
    - Or: `curl -fsSL https://ollama.ai/install.sh | sh`
 
 3. **System Requirements**
-   - Kubuntu or Debian-based Linux distribution
+   - Any Linux distribution (Ubuntu, Fedora, Arch, openSUSE, etc.)
    - sudo access for system modifications
 
 ## Installation Steps
@@ -30,19 +30,17 @@ cd linux-system-agent
 pip install -r requirements.txt
 ```
 
-Or manually:
-```bash
-pip install langchain langchain-ollama langchain-community --break-system-packages
-```
+The dependencies include:
+- `langchain` - Agent framework
+- `langchain-ollama` - Ollama LLM integration
+- `langchain-community` - Additional utilities
+- `langgraph` - Agent execution graph
+- `duckduckgo-search` - Web search (Python-based)
+- `beautifulsoup4` - HTML parsing for URL fetching
+- `requests` - HTTP requests
+- `lxml` - Fast XML/HTML parsing
 
-### 3. Install Optional Tools
-
-For web search functionality:
-```bash
-sudo apt install ddgr
-```
-
-### 4. Configure Ollama
+### 3. Configure Ollama
 
 Ensure Ollama is running:
 ```bash
@@ -54,10 +52,17 @@ Pull a model (if not already available):
 ollama pull qwen2:7b
 ```
 
-### 5. Run the Agent
+### 4. Run the Agent
 
 ```bash
 python3 linux_agent.py
+```
+
+Or use the setup script for full installation with desktop entry:
+
+```bash
+chmod +x setup.sh
+./setup.sh
 ```
 
 ## Configuration
@@ -66,11 +71,20 @@ python3 linux_agent.py
 
 Custom instructions are stored in `~/.linux_agent/instructions.json`.
 
-The agent automatically creates this file when you add instructions using:
+Commands:
 - `add instruction <text>` - Add a custom instruction
 - `list instructions` - Show all custom instructions
 - `remove instruction <n>` - Remove by number
 - `clear instructions` - Clear all
+
+### Search Configuration
+
+- **Rate limit**: Default 5 searches/minute (configurable 1-20)
+- **Language**: Default English (can set to Arabic)
+- **Commands**:
+  - `set search limit <n>` - Change rate limit
+  - `set language <en|ar>` - Change language
+  - `show config` - Display all settings
 
 ### Available Ollama Models
 
@@ -78,7 +92,22 @@ By default, the agent supports:
 - `qwen2:7b` (default)
 - `glm-4.7:cloud` (may require API key)
 
-To use a different model, update the `AVAILABLE_MODELS` list in `linux_agent.py`.
+To use a different model:
+```
+set model qwen2:7b
+```
+
+## Cross-Distribution Support
+
+The agent automatically detects your Linux distribution and uses the appropriate package manager:
+
+| Distribution | Package Manager |
+|--------------|-----------------|
+| Ubuntu/Debian | apt |
+| Fedora/RHEL | dnf/yum |
+| Arch/Manjaro | pacman |
+| openSUSE | zypper |
+| Alpine | apk |
 
 ## Troubleshooting
 
@@ -99,5 +128,12 @@ pip install --upgrade langchain-core --break-system-packages
 ### Issue: Permission Denied
 
 Some commands require sudo. The agent will prompt for your password when needed.
+
+### Issue: Web Search Not Working
+
+Make sure dependencies are installed:
+```bash
+pip install duckduckgo-search beautifulsoup4 requests lxml
+```
 
 See [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for more solutions.

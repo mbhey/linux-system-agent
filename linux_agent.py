@@ -9,12 +9,26 @@ import os
 import shutil
 import json
 import platform
+import time
 from pathlib import Path
 from typing import Optional, List
 
 from langchain_ollama import ChatOllama
 from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
+
+try:
+    from config import load_config, save_config
+except ImportError:
+
+    def load_config():
+        return {
+            "search": {"rate_limit_per_minute": 5, "language": "en", "max_results": 5},
+            "auto_fix": {"enabled": True, "ask_before_fix": True},
+        }
+
+    def save_config(cfg):
+        pass
 
 
 AVAILABLE_MODELS = ["qwen2:7b", "glm-4.7:cloud"]
@@ -184,6 +198,181 @@ class LinuxDistro:
 distro = LinuxDistro()
 
 
+class SearchManager:
+    """Manages web search with rate limiting and language support."""
+
+    def __init__(self):
+        self.config = load_config()
+        self.request_times = []
+
+    def can_search(self) -> bool:
+        """Check if rate limit allows search (default: 5 per minute)."""
+        import time
+
+        now = time.time()
+        limit = self.config.get("search", {}).get("rate_limit_per_minute", 5)
+
+        # Remove requests older than 1 minute
+        self.request_times = [t for t in self.request_times if now - t < 60]
+
+        if len(self.request_times) < limit:
+            self.request_times.append(now)
+            return True
+        return False
+
+    def search(self, query: str, lang: Optional[str] = None) -> list:
+        """Search the web using DuckDuckGo."""
+        if lang is None:
+            lang = self.config.get("search", {}).get("language", "en")
+
+        if not self.can_search():
+            return [
+                {"error": "Rate limit exceeded. Please wait before searching again."}
+            ]
+
+        try:
+            from duckduckgo_search import DDGS
+
+            max_results = self.config.get("search", {}).get("max_results", 5)
+
+            ddgs = DDGS()
+            results = list(
+                ddgs.text(
+                    query,
+                    max_results=max_results,
+                    region=lang if lang != "en" else "wt-wt",
+                )
+            )
+
+            return results if results else [{"error": "No results found."}]
+        except Exception as e:
+            return [{"error": f"Search failed: {str(e)}"}]
+
+    def fetch_url(self, url: str) -> str:
+        """Fetch and parse content from a URL."""
+        try:
+            import requests
+            from bs4 import BeautifulSoup
+
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+
+            soup = BeautifulSoup(response.content, "lxml")
+
+            # Remove script and style elements
+            for script in soup(["script", "style"]):
+                script.decompose()
+
+            # Get text content
+            text = soup.get_text(separator="\n", strip=True)
+
+            # Limit to first 3000 chars
+            return text[:3000] if len(text) > 3000 else text
+        except Exception as e:
+            return f"Failed to fetch URL: {str(e)}"
+
+
+class ErrorDetector:
+    """Detects and classifies system errors."""
+
+    ERROR_PATTERNS = {
+        "package": [
+            r"E: Package .* not found",
+            r"dpkg: error",
+            r"Unable to locate package",
+            r"dependency problems",
+            r"broken packages",
+            r"could not be satisfied",
+        ],
+        "service": [
+            r"Failed to start .* service",
+            r"active: failed",
+            r"Unit .* failed",
+            r"Job for .* failed",
+            r"Failed to restart",
+        ],
+        "network": [
+            r"network unreachable",
+            r"dns.*error",
+            r"connection refused",
+            r"Could not resolve",
+            r"Temporary failure in name resolution",
+        ],
+        "permission": [
+            r"permission denied",
+            r"sudo:.*not found",
+            r"Operation not permitted",
+        ],
+        "disk": [
+            r"No space left on device",
+            r"Disk quota exceeded",
+            r"read-only file system",
+        ],
+    }
+
+    def detect(self, error_output: str) -> tuple[str, str]:
+        """Detect error type and return (category, description)."""
+        import re
+
+        for category, patterns in self.ERROR_PATTERNS.items():
+            for pattern in patterns:
+                if re.search(pattern, error_output, re.IGNORECASE):
+                    return category, pattern
+
+        return "unknown", "Unknown error"
+
+
+class FixManager:
+    """Manages fixes for detected errors."""
+
+    FIX_STRATEGIES = {
+        "package": [
+            "Run package manager update (e.g., 'sudo apt update')",
+            "Check package name spelling",
+            "Add required repository (e.g., 'sudo add-apt-repository ppa:user/ppa')",
+            "Try installing dependencies first",
+        ],
+        "service": [
+            "Check service status: sudo systemctl status <service>",
+            "View detailed logs: sudo journalctl -xe -u <service>",
+            "Reload systemd daemon: sudo systemctl daemon-reload",
+            "Check if port is already in use",
+        ],
+        "network": [
+            "Check network connection: ping -c 3 8.8.8.8",
+            "Check DNS: cat /etc/resolv.conf",
+            "Restart network manager: sudo systemctl restart NetworkManager",
+            "Check firewall rules",
+        ],
+        "permission": [
+            "Use sudo for privileged commands",
+            "Check file permissions: ls -la <path>",
+            "Add user to appropriate group: sudo usermod -aG <group> <user>",
+        ],
+        "disk": [
+            "Clean up disk space: 'clean system' command",
+            "Remove old logs: sudo journalctl --vacuum-time=7d",
+            "Check disk usage: 'disk usage' command",
+        ],
+    }
+
+    def get_fix(self, error_category: str) -> str:
+        """Return suggested fix for error category."""
+        strategies = self.FIX_STRATEGIES.get(
+            error_category, ["Try the command again", "Check system logs"]
+        )
+        return "\n".join([f"- {s}" for s in strategies])
+
+
+# Global instances
+search_manager = SearchManager()
+error_detector = ErrorDetector()
+fix_manager = FixManager()
+
+
 def ensure_config_dir():
     """Ensure config directory exists."""
     CONFIG_DIR.mkdir(exist_ok=True)
@@ -269,7 +458,24 @@ def upgrade_system() -> str:
         capture_output=True,
         text=True,
     )
-    return result.stdout + result.stderr
+
+    output = result.stdout + result.stderr
+
+    if result.returncode != 0:
+        category, pattern = error_detector.detect(output)
+        fix_suggestions = fix_manager.get_fix(category)
+
+        output += f"\n\n" + "=" * 50 + "\n"
+        output += f"Error detected! Category: {category.upper()}\n"
+        output += f"\nSuggested fixes:\n{fix_suggestions}\n"
+
+        results = search_manager.search(f"{distro.distro} system upgrade error fix")
+        if results and "error" not in results[0]:
+            output += "\nOnline solutions:\n"
+            for r in results[:3]:
+                output += f"• {r.get('title', 'N/A')}: {r.get('href', 'N/A')}\n"
+
+    return output
 
 
 @tool
@@ -352,7 +558,28 @@ def install_package(package_name: str) -> str:
         capture_output=True,
         text=True,
     )
-    return result.stdout + result.stderr
+
+    output = result.stdout + result.stderr
+
+    # Check for errors and provide diagnosis
+    if result.returncode != 0:
+        category, pattern = error_detector.detect(output)
+        fix_suggestions = fix_manager.get_fix(category)
+
+        output += f"\n\n" + "=" * 50 + "\n"
+        output += f"Error detected! Category: {category.upper()}\n"
+        output += f"\nSuggested fixes:\n{fix_suggestions}\n"
+
+        # Add online search results
+        results = search_manager.search(
+            f"Ubuntu {package_name} install error {pattern} fix"
+        )
+        if results and "error" not in results[0]:
+            output += "\nOnline solutions:\n"
+            for r in results[:3]:
+                output += f"• {r.get('title', 'N/A')}: {r.get('href', 'N/A')}\n"
+
+    return output
 
 
 @tool
@@ -504,7 +731,24 @@ def system_services(action: str, service_name: str) -> str:
         capture_output=True,
         text=True,
     )
-    return result.stdout + result.stderr
+
+    output = result.stdout + result.stderr
+
+    if result.returncode != 0:
+        category, pattern = error_detector.detect(output)
+        fix_suggestions = fix_manager.get_fix(category)
+
+        output += f"\n\n" + "=" * 50 + "\n"
+        output += f"Error detected! Category: {category.upper()}\n"
+        output += f"\nSuggested fixes:\n{fix_suggestions}\n"
+
+        results = search_manager.search(f"systemd {service_name} {action} failed fix")
+        if results and "error" not in results[0]:
+            output += "\nOnline solutions:\n"
+            for r in results[:3]:
+                output += f"• {r.get('title', 'N/A')}: {r.get('href', 'N/A')}\n"
+
+    return output
 
 
 @tool
@@ -603,27 +847,93 @@ def firewall_status() -> str:
 
 
 @tool
-def search_web(query: str) -> str:
-    """Search the web for information using ddgr."""
-    result = subprocess.run(
-        f"ddgr --json -n 5 {query} 2>/dev/null || echo 'ddgr not installed'",
-        shell=True,
-        capture_output=True,
-        text=True,
-    )
-    if "ddgr not installed" in result.stdout:
-        return "Web search not available. Install: sudo apt install ddgr"
+def search_web(query: str, language: str = "en") -> str:
+    """Search the web for information using DuckDuckGo.
 
-    try:
-        import json
+    Args:
+        query: The search query
+        language: 'en' for English, 'ar' for Arabic (default: en)
+    """
+    results = search_manager.search(query, language)
 
-        results = json.loads(result.stdout)
-        output = []
-        for r in results:
-            output.append(f"- {r.get('title', 'N/A')}: {r.get('url', 'N/A')}")
-        return "\n".join(output) if output else "No results found"
-    except:
-        return result.stdout
+    if isinstance(results, list) and "error" in results[0] if results else False:
+        return results[0]["error"]
+
+    output = []
+    for r in results:
+        title = r.get("title", "N/A")
+        url = r.get("href", r.get("url", "N/A"))
+        body = r.get("body", "")[:100]
+        output.append(f"• {title}\n  {body}...\n  URL: {url}\n")
+
+    return "\n".join(output) if output else "No results found."
+
+
+@tool
+def fetch_url(url: str) -> str:
+    """Fetch content from a URL and extract key information.
+
+    Args:
+        url: The URL to fetch
+    """
+    return search_manager.fetch_url(url)
+
+
+@tool
+def diagnose_error(error_message: str) -> str:
+    """Diagnose a system error and find solutions online.
+
+    Args:
+        error_message: The error message to diagnose
+    """
+    category, pattern = error_detector.detect(error_message)
+
+    if category == "unknown":
+        # Search online for the error
+        results = search_manager.search(f"Linux {error_message[:100]} fix solution")
+        output = [f"Error detected but couldn't classify. Searching online...\n"]
+        for r in results[:3]:
+            output.append(f"• {r.get('title', 'N/A')}: {r.get('href', 'N/A')}")
+        return "\n".join(output)
+
+    fix_suggestions = fix_manager.get_fix(category)
+
+    # Search for specific solutions
+    results = search_manager.search(f"{category} {error_message[:50]} fix")
+
+    output = [
+        f"Error Category: {category.upper()}",
+        f"Matched Pattern: {pattern}",
+        "",
+        "General Fix Suggestions:",
+        fix_suggestions,
+        "",
+        "Online Solutions:",
+    ]
+
+    for r in results[:3]:
+        output.append(f"• {r.get('title', 'N/A')}: {r.get('href', 'N/A')}")
+
+    return "\n".join(output)
+
+
+@tool
+def search_documentation(topic: str) -> str:
+    """Search official Linux documentation (Arch Wiki, Ubuntu Docs).
+
+    Args:
+        topic: The topic to search for
+    """
+    results = search_manager.search(f"site:wiki.archlinux.org {topic}")
+
+    if not results:
+        return f"No documentation found for '{topic}'"
+
+    output = [f"Documentation results for '{topic}':\n"]
+    for r in results[:5]:
+        output.append(f"• {r.get('title', 'N/A')}\n  {r.get('href', 'N/A')}\n")
+
+    return "\n".join(output)
 
 
 @tool
@@ -660,6 +970,9 @@ def get_tools():
         list_services,
         firewall_status,
         search_web,
+        fetch_url,
+        diagnose_error,
+        search_documentation,
         run_command,
     ]
 
@@ -717,8 +1030,19 @@ NETWORK:
 - network_info: Show network connections and IP
 
 SEARCH & UTILS:
-- search_web: Search internet
+- search_web: Search internet (supports English and Arabic)
+- fetch_url: Fetch and parse content from a URL
+- search_documentation: Search official Linux docs (Arch Wiki, Ubuntu Docs)
+- diagnose_error: Diagnose error and find solutions online
 - run_command: Run shell command
+
+ERROR HANDLING:
+When commands fail, the agent will automatically detect the error type (package, service, network, permission, disk) and provide suggested fixes with online solutions.
+
+CONFIGURATION:
+- Search rate limit: 5/minute (configurable 1-20)
+- Search language: English (en) or Arabic (ar)
+- Auto-fix: enabled by default
 
 Always confirm dangerous operations (delete, remove package, kill process) before executing.
 Provide clear feedback about what you're doing.
@@ -729,6 +1053,8 @@ Be helpful and explain your actions."""
 
 
 def main():
+    config = load_config()
+
     print("=" * 50)
     print(f"Linux System Agent - {distro.distro.title()}")
     print("=" * 50)
@@ -736,12 +1062,25 @@ def main():
     print(f"Package manager: {distro.package_manager['name'].upper()}")
     print(f"Available models: {', '.join(AVAILABLE_MODELS)}")
     print(f"Default model: {DEFAULT_MODEL}")
+    print(
+        f"\nSearch language: {config.get('search', {}).get('language', 'en').upper()}"
+    )
+    print(
+        f"Search rate limit: {config.get('search', {}).get('rate_limit_per_minute', 5)}/min"
+    )
+    print(
+        f"Auto-fix: {'enabled' if config.get('auto_fix', {}).get('enabled', True) else 'disabled'}"
+    )
     print("\nTo change model, type: set model <model_name>")
     print("To manage instructions:")
     print("  add instruction <text>   - Add a custom instruction")
     print("  list instructions        - Show all custom instructions")
     print("  remove instruction <n>   - Remove instruction by number")
     print("  clear instructions       - Remove all custom instructions")
+    print("To manage config:")
+    print("  set search limit <n>     - Set searches per minute (1-20)")
+    print("  set language <en|ar>     - Set search language")
+    print("  show config              - Display current settings")
     print("To exit, type: exit\n")
 
     current_model = DEFAULT_MODEL
@@ -749,7 +1088,10 @@ def main():
 
     while True:
         try:
-            user_input = input("\033[92mYou:\033[0m ").strip()
+            try:
+                user_input = input("\033[92mYou:\033[0m ").strip()
+            except EOFError:
+                break
             if user_input.lower() in ["exit", "quit"]:
                 break
             if not user_input:
@@ -803,6 +1145,50 @@ def main():
                 save_instructions([])
                 agent = create_agent(current_model)
                 print(f"\n\033[94mAgent:\033[0m All instructions cleared.\n\n\n")
+                continue
+
+            if user_input.lower().startswith("set search limit "):
+                try:
+                    limit = int(user_input[16:].strip())
+                    if 1 <= limit <= 20:
+                        config["search"]["rate_limit_per_minute"] = limit
+                        save_config(config)
+                        print(
+                            f"\n\033[94mAgent:\033[0m Search limit set to {limit}/min\n\n\n"
+                        )
+                    else:
+                        print(
+                            f"\n\033[94mAgent:\033[0m Limit must be between 1 and 20\n\n\n"
+                        )
+                except ValueError:
+                    print(
+                        f"\n\033[94mAgent:\033[0m Please provide a valid number\n\n\n"
+                    )
+                continue
+
+            if user_input.lower().startswith("set language "):
+                lang = user_input[12:].strip().lower()
+                if lang in ["en", "ar"]:
+                    config["search"]["language"] = lang
+                    save_config(config)
+                    print(
+                        f"\n\033[94mAgent:\033[0m Language set to {lang.upper()}\n\n\n"
+                    )
+                else:
+                    print(
+                        f"\n\033[94mAgent:\033[0m Invalid language. Use 'en' or 'ar'\n\n\n"
+                    )
+                continue
+
+            if user_input.lower() == "show config":
+                msg = f"""Current Configuration:
+Search Language: {config.get("search", {}).get("language", "en").upper()}
+Search Rate Limit: {config.get("search", {}).get("rate_limit_per_minute", 5)}/min
+Max Results: {config.get("search", {}).get("max_results", 5)}
+Auto-fix Enabled: {config.get("auto_fix", {}).get("enabled", True)}
+Ask Before Fix: {config.get("auto_fix", {}).get("ask_before_fix", True)}
+Model: {current_model}"""
+                print(f"\n\033[94mAgent:\033[0m {msg}\n\n\n")
                 continue
 
             if user_input.lower().startswith("set model "):

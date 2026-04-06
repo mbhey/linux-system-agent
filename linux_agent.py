@@ -10,6 +10,7 @@ import shutil
 import json
 import platform
 import time
+import shlex
 from pathlib import Path
 from typing import Optional, List
 
@@ -18,7 +19,7 @@ from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
 
 try:
-    from config import load_config, save_config
+    from config import load_config, save_config, ensure_config_dir
 except ImportError:
 
     def load_config():
@@ -28,6 +29,9 @@ except ImportError:
         }
 
     def save_config(cfg):
+        pass
+
+    def ensure_config_dir():
         pass
 
 
@@ -54,7 +58,7 @@ class LinuxDistro:
                     for line in f:
                         if line.startswith("ID="):
                             return line.split("=")[1].strip().strip('"')
-        except:
+        except Exception:
             pass
         return "unknown"
 
@@ -207,8 +211,6 @@ class SearchManager:
 
     def can_search(self) -> bool:
         """Check if rate limit allows search (default: 5 per minute)."""
-        import time
-
         now = time.time()
         limit = self.config.get("search", {}).get("rate_limit_per_minute", 5)
 
@@ -373,11 +375,6 @@ error_detector = ErrorDetector()
 fix_manager = FixManager()
 
 
-def ensure_config_dir():
-    """Ensure config directory exists."""
-    CONFIG_DIR.mkdir(exist_ok=True)
-
-
 def load_instructions() -> List[str]:
     """Load custom instructions from config file."""
     ensure_config_dir()
@@ -386,7 +383,7 @@ def load_instructions() -> List[str]:
             with open(CONFIG_FILE, "r") as f:
                 data = json.load(f)
                 return data.get("instructions", [])
-        except:
+        except Exception:
             return []
     return []
 
@@ -490,7 +487,8 @@ def clean_system() -> str:
 
     for name, cmd in cmds:
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        results.append(f"{name}: {'OK' if result.returncode == 0 else 'Failed'}")
+        msg = 'OK' if result.returncode == 0 else f'Failed: {result.stderr.strip()}'
+        results.append(f"{name}: {msg}")
 
     return "\n".join(results)
 
@@ -553,7 +551,7 @@ def tune_performance() -> str:
 def install_package(package_name: str) -> str:
     """Install a package by name."""
     result = subprocess.run(
-        f"{distro.get_install_command(package_name)} 2>&1",
+        f"{distro.get_install_command(shlex.quote(package_name))} 2>&1",
         shell=True,
         capture_output=True,
         text=True,
@@ -586,7 +584,7 @@ def install_package(package_name: str) -> str:
 def remove_package(package_name: str) -> str:
     """Remove/uninstall a package by name."""
     result = subprocess.run(
-        f"{distro.get_remove_command(package_name)} 2>&1",
+        f"{distro.get_remove_command(shlex.quote(package_name))} 2>&1",
         shell=True,
         capture_output=True,
         text=True,
@@ -598,7 +596,7 @@ def remove_package(package_name: str) -> str:
 def search_package(package_name: str) -> str:
     """Search for a package in repositories."""
     result = subprocess.run(
-        f"{distro.get_search_command(package_name)} 2>&1 | head -20",
+        f"{distro.get_search_command(shlex.quote(package_name))} 2>&1 | head -20",
         shell=True,
         capture_output=True,
         text=True,
@@ -610,7 +608,7 @@ def search_package(package_name: str) -> str:
 def add_repository(repo_line: str) -> str:
     """Add a repository (e.g., ppa:user/repo or deb line)."""
     result = subprocess.run(
-        f"sudo add-apt-repository -y {repo_line} 2>&1",
+        f"sudo add-apt-repository -y {shlex.quote(repo_line)} 2>&1",
         shell=True,
         capture_output=True,
         text=True,
@@ -682,16 +680,26 @@ def reorganize_documents() -> str:
     }
 
     moved = []
-    for category, extensions in categories.items():
-        cat_dir = docs / category
-        cat_dir.mkdir(exist_ok=True)
-
-        for ext in extensions:
-            for f in docs.glob(f"*{ext}"):
-                if f.is_file() and f.parent == docs:
+    for f in docs.iterdir():
+        if f.is_file() and f.parent == docs:
+            ext = f.suffix.lower()
+            for category, extensions in categories.items():
+                if ext in extensions:
+                    cat_dir = docs / category
+                    cat_dir.mkdir(exist_ok=True)
+                    
                     dest = cat_dir / f.name
+                    if dest.exists():
+                        i = 1
+                        while True:
+                            new_dest = cat_dir / f"{f.stem}_{i}{f.suffix}"
+                            if not new_dest.exists():
+                                dest = new_dest
+                                break
+                            i += 1
                     f.rename(dest)
                     moved.append(f"{f.name} -> {category}/")
+                    break
 
     if moved:
         return "Reorganized:\n" + "\n".join(moved)
@@ -711,7 +719,7 @@ def list_processes() -> str:
 def kill_process(pid: str) -> str:
     """Kill a process by PID."""
     result = subprocess.run(
-        f"sudo kill {pid} 2>&1", shell=True, capture_output=True, text=True
+        f"sudo kill {shlex.quote(str(pid))} 2>&1", shell=True, capture_output=True, text=True
     )
     if result.returncode == 0:
         return f"Process {pid} killed"
@@ -726,7 +734,7 @@ def system_services(action: str, service_name: str) -> str:
         return f"Invalid action. Use: {', '.join(valid_actions)}"
 
     result = subprocess.run(
-        f"sudo systemctl {action} {service_name} 2>&1",
+        f"sudo systemctl {shlex.quote(action)} {shlex.quote(service_name)} 2>&1",
         shell=True,
         capture_output=True,
         text=True,
@@ -754,7 +762,7 @@ def system_services(action: str, service_name: str) -> str:
 @tool
 def disk_usage(path: str = "/") -> str:
     """Check disk usage for a path."""
-    result = subprocess.run(f"df -h {path}", shell=True, capture_output=True, text=True)
+    result = subprocess.run(f"df -h {shlex.quote(path)}", shell=True, capture_output=True, text=True)
     return result.stdout
 
 
@@ -762,7 +770,7 @@ def disk_usage(path: str = "/") -> str:
 def directory_size(path: str) -> str:
     """Show size of directories."""
     result = subprocess.run(
-        f"du -sh {path}/* 2>/dev/null | sort -hr | head -15",
+        f"du -sh {shlex.quote(path)}/* 2>/dev/null | sort -hr | head -15",
         shell=True,
         capture_output=True,
         text=True,
@@ -816,8 +824,9 @@ def cpu_info() -> str:
 @tool
 def find_files(name: str, path: str = "/home") -> str:
     """Find files by name pattern."""
+    name_arg = shlex.quote(f"*{name}*")
     result = subprocess.run(
-        f"find {path} -name '*{name}*' 2>/dev/null | head -20",
+        f"find {shlex.quote(path)} -name {name_arg} 2>/dev/null | head -20",
         shell=True,
         capture_output=True,
         text=True,

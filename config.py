@@ -3,6 +3,7 @@ Configuration management for Linux System Agent
 """
 
 import json
+import copy
 from pathlib import Path
 from typing import Optional
 
@@ -29,14 +30,14 @@ def load_config() -> dict:
             with open(CONFIG_FILE, "r") as f:
                 stored = json.load(f)
                 # Merge with defaults to ensure all keys exist
-                config = DEFAULT_CONFIG.copy()
+                config = copy.deepcopy(DEFAULT_CONFIG)
                 for section, values in stored.items():
                     if section in config:
                         config[section].update(values)
                 return config
         except (json.JSONDecodeError, IOError):
-            return DEFAULT_CONFIG.copy()
-    return DEFAULT_CONFIG.copy()
+            return copy.deepcopy(DEFAULT_CONFIG)
+    return copy.deepcopy(DEFAULT_CONFIG)
 
 
 def save_config(config: dict) -> None:
@@ -78,4 +79,4 @@ def set_setting(path: str, value) -> bool:
 
 def reset_config() -> None:
     """Reset configuration to defaults."""
-    save_config(DEFAULT_CONFIG.copy())
+    save_config(copy.deepcopy(DEFAULT_CONFIG))
